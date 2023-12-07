@@ -79,6 +79,7 @@ char** split_path(const char *path, int *num_components) {
     // Split the path using strtok
     const char delim[2] = "/";
     char *token;
+    components[0] = strdup("");
     int i = 1;
     token = strtok(path_copy, delim);
     while (token != NULL) {
@@ -109,12 +110,12 @@ int update_superblock() {
     return 0; // Superblock updated successfully
 }
 
-int get_path_entry(const char *path, struct wfs_log_entry *entry) {
+struct wfs_log_entry *get_path_entry(const char *path) {
     printf("Getting path entry for %s_________________________________________________________________________\n", path);
+    struct wfs_log_entry *entry;
     int n;
     char **path_components = split_path(path, &n);
     int search_num = 0;
-
     int updated = 0;
 
     for (int i = 0; i < n; i++) {
@@ -122,9 +123,8 @@ int get_path_entry(const char *path, struct wfs_log_entry *entry) {
         struct wfs_inode current_inode;
         int prev = search_num;
         int new_search_num = search_num;
-        while( read(fd, &current_inode, sizeof(struct wfs_inode)) ) {
-            printf("Checking inode %d\n", current_inode.inode_number);
-            if (current_inode.atime == 0) break; // make sure there is an inode
+        read(fd, &current_inode, sizeof(struct wfs_inode));
+        while( current_inode.atime != 0) {
             printf("inode %d is an inode\n", current_inode.inode_number);
             if(current_inode.inode_number == search_num) {
                 printf("Found inode %d\n", current_inode.inode_number);
@@ -135,9 +135,11 @@ int get_path_entry(const char *path, struct wfs_log_entry *entry) {
                     read(fd, &dir_content, size); // get dir entries
 
                     printf("[%d] Found directory with %d entries\n", i, dir_n);
+                    printf("%d, %s\n", size, dir_content[0].name);
 
                     if (i+1 >= n) { // check if dir is last in path
                         updated = 1;
+                        entry = malloc(sizeof(current_inode) + size);
                         entry->inode = current_inode;
                         memcpy(&entry->data, &dir_content, size);
                     } else { 
@@ -147,7 +149,6 @@ int get_path_entry(const char *path, struct wfs_log_entry *entry) {
                             if (strcmp(dir_content[j].name, path_components[i+1]) == 0) {
                                 new_search_num = dir_content[j].inode_number;
                                 printf("New search number is %d\n", search_num);
-                                // break;
                             }
                         }
                     }
@@ -159,45 +160,49 @@ int get_path_entry(const char *path, struct wfs_log_entry *entry) {
                     read(fd, &content, size); // get file content
 
                     if (i != n-1) { // check that file is end of path
-                        return -1;
+                        return NULL;
                     }
 
                     updated = 1;
+                    if(entry != (void*) NULL) free(entry);
+                    entry = malloc(sizeof(current_inode) + size);
                     entry->inode = current_inode;
                     memcpy(&entry->data, &content, size);
-                    return 0;
+                    return entry;
                 }
             } else {
                 // skip past data
                 int size = current_inode.size;
                 lseek(fd, size, SEEK_CUR);
             }
+            read(fd, &current_inode, sizeof(struct wfs_inode));
         }
         if (i+1 >= n) {
             if (updated == 1) {
-                printf("returning 0\n");
-                return 0;
+                printf("returning 0 with inode number %d\n", entry->inode.inode_number);
+                return entry;
             }
-            else return -1;
+            else return NULL;
         }
         printf("Updating search to %d\n", new_search_num);
         search_num = new_search_num;
         if (prev == search_num) {
-            return -1;
+            return NULL;
         }
         printf("Continuing\n");
     }
-    return -1;
+    return NULL;
 }
 
 static int wfs_mknod(const char* path, mode_t mode, dev_t rdev) {
     printf("MKNOD ENTERED\n");
+
     struct wfs_log_entry new_file;
 
     struct wfs_inode inode;
     inode.inode_number = next_inode_num;
     next_inode_num++;
-    inode.mode = mode;
+    inode.mode = mode | S_IFREG;
     inode.uid = getuid();
     inode.gid = getgid();
     inode.size = 0;
@@ -227,33 +232,32 @@ static int wfs_mknod(const char* path, mode_t mode, dev_t rdev) {
 
 static int wfs_write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi) {
     printf("WRITE ENTERED\n");
-    struct wfs_log_entry entry;
-    int ret = get_path_entry(path, &entry);
-    if (ret < 0) {
+    struct wfs_log_entry *entry = get_path_entry(path);
+    if(entry == (void*) NULL) {
         printf("Write error\n");
         return -ENOENT;
     }
 
     int new_size;
-    if (offset + size > entry.inode.size) {
+    if (offset + size > entry->inode.size) {
         new_size = offset + size;
     } else {
-        new_size = entry.inode.size;
+        new_size = entry->inode.size;
     }
 
-    printf("%d, %ld, %ld, %d\n", entry.inode.size, offset, size, new_size);
+    printf("%d, %ld, %ld, %d\n", entry->inode.size, offset, size, new_size);
 
     struct wfs_inode inode;
-    inode.inode_number = entry.inode.inode_number;
-    inode.mode = entry.inode.mode;
-    inode.uid = entry.inode.uid;
-    inode.gid = entry.inode.gid;
+    inode.inode_number = entry->inode.inode_number;
+    inode.mode = entry->inode.mode;
+    inode.uid = entry->inode.uid;
+    inode.gid = entry->inode.gid;
     inode.size = new_size;
     inode.mtime = inode.ctime = time(NULL);
     inode.links = 1;
 
     char *new_data = malloc(new_size);
-    memcpy(new_data, &entry.data, entry.inode.size);
+    memcpy(new_data, &entry->data, entry->inode.size);
     memcpy(new_data + offset, buf, size);
     
     if (lseek(fd, superblock.head, SEEK_SET) == (off_t) -1) {
@@ -269,15 +273,20 @@ static int wfs_write(const char* path, const char *buf, size_t size, off_t offse
         return -errno;
     }
 
+    free(entry);
     return 0; // Success
 }
 
 static int wfs_mkdir(const char* path, mode_t mode) {
     printf("MKDIR ENTERED************************************************************************************\n");
-    struct wfs_log_entry entry;
-    if (get_path_entry(path, &entry) == 0) return -EEXIST;
+    struct wfs_log_entry *entry = get_path_entry(path);
+    if(entry != (void*) NULL) return -EEXIST;
     char *parent = get_parent_directory(path);
-    if(get_path_entry(parent, &entry) < 0) printf("Didn't find parent");
+    entry = get_path_entry(parent);
+    if(entry == (void*) NULL) {
+        printf("Didn't find parent");
+        return -1;
+    }
 
     // make dentry for new dir
     struct wfs_dentry new_dir;
@@ -286,24 +295,31 @@ static int wfs_mkdir(const char* path, mode_t mode) {
     next_inode_num++;
     strcpy(new_dir.name, get_name(path));
 
-    entry.inode.ctime = time(NULL);
-    entry.inode.mtime = time(NULL);
-    entry.inode.size += sizeof(new_dir);
+    entry->inode.ctime = time(NULL);
+    entry->inode.mtime = time(NULL);
+    entry->inode.size += sizeof(new_dir);
+
+    size_t entry_size = sizeof(struct wfs_inode) + entry->inode.size;
+
+    if (superblock.head + sizeof(superblock) + entry_size + sizeof(new_dir) >= DISK_SIZE) {
+        return -ENOSPC;
+    }
 
     if (lseek(fd, superblock.head, SEEK_SET) == (off_t) -1) {
         printf("Error 1\n");
         return -errno;
     }
     // writing current parent dir
-    ssize_t written_dir = write(fd, &entry, sizeof(entry));
-    if (written_dir!= sizeof(entry)) {
+    ssize_t written_dir = write(fd, entry, entry_size);
+    if (written_dir != entry_size) {
         printf("Failed writing parent entry\n");
     }
     // add new dir to parent
     ssize_t written_dentry = write(fd, &new_dir, sizeof(new_dir));
-    if (written_dentry!= sizeof(new_dir)) {
+    if (written_dentry != sizeof(new_dir)) {
         printf("Failed writing new dir to parent\n");
     }
+
 
     superblock.head += written_dir + written_dentry;
     if (update_superblock() != 0) {
@@ -322,6 +338,10 @@ static int wfs_mkdir(const char* path, mode_t mode) {
     inode.links = 1;
 
     new_dir_entry.inode = inode;
+
+    if (superblock.head + sizeof(superblock) + sizeof(new_dir_entry) >= DISK_SIZE) {
+        return -ENOSPC;
+    }
     
     if (lseek(fd, superblock.head, SEEK_SET) == (off_t) -1) {
         printf("Error 1\n");
@@ -339,6 +359,7 @@ static int wfs_mkdir(const char* path, mode_t mode) {
         return -errno;
     }
 
+    free(entry);
     return 0;
 }
 
@@ -357,10 +378,9 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
     (void) offset;
     (void) fi;
 
-    struct wfs_log_entry entry;
-    int res = get_path_entry(path, &entry);
-    struct wfs_inode inode = entry.inode;
-    if (res != 0) return -errno;
+    struct wfs_log_entry *entry = get_path_entry(path);
+    if(entry == (void*) NULL) return -errno;
+    struct wfs_inode inode = entry->inode;
 
     // Check if inode is a directory
     if (!S_ISDIR(inode.mode)) {
@@ -368,7 +388,7 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
     }
 
     // Read the directory entries
-    struct wfs_dentry *dentry = (struct wfs_dentry *) entry.data;
+    struct wfs_dentry *dentry = (struct wfs_dentry *) entry->data;
     for (unsigned int i = 0; i < inode.size / sizeof(struct wfs_dentry); i++) {
         if (filler(buf, dentry[i].name, NULL, 0) != 0) {
             return -ENOMEM; // Buffer full
@@ -380,18 +400,18 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
 
 static int wfs_getattr(const char* path, struct stat* stbuf) {
     printf("GETATTR ENTERED\n");
-    struct wfs_log_entry entry;
-    int ret = get_path_entry(path, &entry);
-    if (ret < 0) {
-        printf("%s: getattr failed\n", path);
-        return -ENOENT;
-    }
-    stbuf->st_uid = entry.inode.uid;
-    stbuf->st_gid = entry.inode.gid;
-    stbuf->st_mtime = entry.inode.mtime;
-    stbuf->st_mode = entry.inode.mode;
-    stbuf->st_nlink = entry.inode.links;
-    stbuf->st_size = entry.inode.size;
+
+    struct wfs_log_entry *entry = get_path_entry(path);
+    if(entry == (void*) NULL) return -ENOENT;
+
+    stbuf->st_uid = entry->inode.uid;
+    stbuf->st_gid = entry->inode.gid;
+    stbuf->st_mtime = entry->inode.mtime;
+    stbuf->st_mode = entry->inode.mode;
+    stbuf->st_nlink = entry->inode.links;
+    stbuf->st_size = entry->inode.size;
+
+    free(entry);
     return 0;
 }
 

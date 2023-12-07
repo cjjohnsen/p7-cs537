@@ -1,3 +1,4 @@
+make
 ./umount.wfs mnt
 rm -f disk
 rmdir mnt

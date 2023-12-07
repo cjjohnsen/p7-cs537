@@ -8,8 +8,6 @@
 #include <sys/types.h>
 #include <time.h>
 
-#define DISK_SIZE 1048576 // 1MB
-
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <disk_path>\n", argv[0]);
