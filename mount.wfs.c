@@ -274,6 +274,13 @@ static int wfs_mknod(const char* path, mode_t mode, dev_t rdev) {
 
 static int wfs_write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi) {
     printf("WRITE ENTERED\n");
+
+    char mybuf[size];
+    for(int i = 0; i < size; i ++)
+    {
+        mybuf[i] = buf[i];
+    }
+
     struct wfs_log_entry *entry = get_path_entry(path);
     if(entry == (void*) NULL) {
         printf("Write error\n");
@@ -300,11 +307,10 @@ static int wfs_write(const char* path, const char *buf, size_t size, off_t offse
 
     char *new_data = malloc(new_size);
     if (entry->inode.size!= 0) memcpy(new_data, &entry->data, entry->inode.size);
-    memcpy(new_data, buf, size);
+    memcpy(new_data, mybuf, size);
 
-    char data[new_size];
-    memcpy(data, new_data, new_size);   
-    printf("Writing \"%s\" to file\n", data);
+    printf("MY BUF: %s", mybuf);
+
 
     if (lseek(fd, superblock.head, SEEK_SET) == (off_t) -1) {
         printf("Error 1\n");
@@ -411,7 +417,7 @@ static int wfs_mkdir(const char* path, mode_t mode) {
 }
 
 static int wfs_unlink(const char* path) {
-  struct   wfs_log_entry *entry;
+    struct wfs_log_entry *entry;
     char *parent = get_parent_directory(path);
     entry = get_path_entry(parent);
     if(entry == (void*) NULL) {
