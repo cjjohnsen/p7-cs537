@@ -435,7 +435,7 @@ static int wfs_unlink(const char* path) {
         return -errno;
     }
     ssize_t written = write(fd, &inode, sizeof(inode));
-    if (written != sizeof(inode)) {
+    if (written != sizeof(struct wfs_inode)) {
         printf("Error 2\n");
         return -errno;
     }
@@ -446,14 +446,16 @@ static int wfs_unlink(const char* path) {
         return -errno;
     }
 
+    struct wfs_dentry *entries = (struct wfs_dentry *)entry->data;
+
     int n_entries = inode.size / sizeof(struct wfs_dentry);
     for (int i = 0; i < n_entries; i++) {
-        if (strcmp(((struct wfs_dentry*)entry->data)[i].name, get_name(path)) != 0) {
+        if (strcmp(entries[i].name, get_name(path)) != 0) {
             if (lseek(fd, superblock.head, SEEK_SET) == (off_t) -1) {
                 printf("Error 1\n");
                 return -errno;
             }
-            ssize_t written_entry = write(fd, &((struct wfs_dentry*)entry->data)[i], sizeof(struct wfs_dentry));
+            ssize_t written_entry = write(fd, &entries[i], sizeof(struct wfs_dentry));
             if (written != sizeof(struct wfs_dentry)) {
                 printf("Error 2\n");
                 return -errno;
