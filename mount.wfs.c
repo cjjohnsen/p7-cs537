@@ -125,6 +125,7 @@ struct wfs_log_entry *get_path_entry(const char *path) {
         read(fd, &current_inode, sizeof(struct wfs_inode));
         while( current_inode.atime != 0) {
             if(current_inode.inode_number == search_num) {
+                if(current_inode.deleted == 1) return NULL;
                 if((current_inode.mode & S_IFDIR) == S_IFDIR) { // directory
                     int size = current_inode.size;
                     int dir_n = size / sizeof(struct wfs_dentry);
@@ -464,6 +465,32 @@ static int wfs_unlink(const char* path) {
                 return -errno;
             }
         }
+    }
+
+    entry = get_path_entry(path);
+    if(entry == (void *) NULL)
+    {
+        return -ENOENT;
+    }
+    struct wfs_inode new_inode = entry->inode; 
+    new_inode.size = 0;
+    new_inode.deleted = 1;
+    new_inode.ctime = new_inode.mtime = time(NULL);
+
+    if (lseek(fd, superblock.head, SEEK_SET) == (off_t) -1) {
+        printf("Error 1\n");
+        return -errno;
+    }
+    ssize_t written_inode = write(fd, &new_inode, sizeof(new_inode));
+    if (written_inode != sizeof(struct wfs_inode)) {
+        printf("Error 2\n");
+        return -errno;
+    }
+
+    superblock.head += written_inode;
+    if (update_superblock() != 0) {
+        printf("Error 3\n");
+        return -errno;
     }
 
     return 0;
